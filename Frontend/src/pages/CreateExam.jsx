@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Container,
   Paper,
@@ -32,7 +32,6 @@ import {
   CardContent,
   CardHeader,
   Avatar,
-  Switch,
   Stack,
   Dialog,
   DialogActions,
@@ -41,6 +40,7 @@ import {
   DialogTitle,
   Fade,
   Zoom,
+  Backdrop,
   alpha,
   useTheme,
   LinearProgress,
@@ -66,18 +66,17 @@ import {
   Visibility as VisibilityIcon,
   School as SchoolIcon,
   AccessTime as AccessTimeIcon,
-  Check as CheckIcon,
   FileCopy as FileCopyIcon,
   ContentPaste as ContentPasteIcon,
   Upload as UploadIcon,
   Restore as RestoreIcon,
-  Settings as SettingsIcon,
   FormatListNumbered as FormatListNumberedIcon,
   Preview as PreviewIcon,
   DragIndicator as DragIndicatorIcon,
   Edit as EditIcon,
   NavigateNext as NavigateNextIcon,
   NavigateBefore as NavigateBeforeIcon,
+  ErrorOutline as ErrorOutlineIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
 import AdminLayout from '../components/AdminLayout';
@@ -182,6 +181,9 @@ const StepperSummary = styled(Box)(({ theme }) => ({
 }));
 
 const CreateExam = () => {
+  const { examId } = useParams();
+  const isEditMode = Boolean(examId);
+  const pageTitle = isEditMode ? 'Edit Exam' : 'Create Exam';
   const navigate = useNavigate();
   const theme = useTheme();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -193,6 +195,12 @@ const CreateExam = () => {
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
+  const [loadingExistingExam, setLoadingExistingExam] = useState(isEditMode);
+  const [loadError, setLoadError] = useState('');
+  const [resultBackdropOpen, setResultBackdropOpen] = useState(false);
+  const [resultBackdropType, setResultBackdropType] = useState('success');
+  const [resultBackdropMessage, setResultBackdropMessage] = useState('');
+  const [originalStartTime, setOriginalStartTime] = useState(null);
 
   // Initialize with default values
   const [formData, setFormData] = useState({
@@ -202,9 +210,6 @@ const CreateExam = () => {
     duration: 60, // Minutes for taking the exam
     activeDuration: 24, // Hours the exam is available after start time
     passingScore: 60, // Default passing percentage
-    shuffleQuestions: true, // Option to randomize question order
-    showResults: true, // Show results to students after completion
-    allowReattempt: false, // Allow students to retake the exam
     questions: [
       {
         questionText: '',
@@ -218,6 +223,10 @@ const CreateExam = () => {
 
   // AutoSave effect
   useEffect(() => {
+    if (isEditMode) {
+      return undefined;
+    }
+
     // Simulate auto-saving after user input
     const autoSaveTimer = setTimeout(() => {
       if (formData.title || formData.description || formData.questions[0].questionText) {
@@ -233,7 +242,7 @@ const CreateExam = () => {
     }, 3000);
 
     return () => clearTimeout(autoSaveTimer);
-  }, [formData]);
+  }, [formData, isEditMode]);
 
   // Update progress percentage based on form completion
   useEffect(() => {
@@ -267,6 +276,10 @@ const CreateExam = () => {
 
   // Check for saved draft on component mount
   useEffect(() => {
+    if (isEditMode) {
+      return;
+    }
+
     const savedDraft = localStorage.getItem('examDraft');
     if (savedDraft) {
       try {
@@ -278,19 +291,83 @@ const CreateExam = () => {
         console.error('Error loading draft:', error);
       }
     }
-  }, []);
+  }, [isEditMode]);
+
+  const loadExamForEdit = useCallback(async () => {
+    if (!isEditMode || !examId) {
+      return;
+    }
+
+    try {
+      setLoadError('');
+      setError('');
+      setLoadingExistingExam(true);
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.get(`/api/v1/exam/${examId}`, { headers });
+
+      const fetchedExam = response.data.exam || {};
+      const baseQuestions = (fetchedExam.questions && fetchedExam.questions.length > 0)
+        ? fetchedExam.questions
+        : [
+            {
+              questionText: '',
+              options: ['', '', '', ''],
+              correctOption: 0,
+              marks: 1,
+            },
+          ];
+
+      const normalizedQuestions = baseQuestions.map((question) => {
+        const options = Array.isArray(question.options) ? [...question.options] : ['', '', '', ''];
+        while (options.length < 4) {
+          options.push('');
+        }
+
+        const parsedCorrectOption = parseInt(question.correctOption, 10);
+        const correctOptionValue = Number.isNaN(parsedCorrectOption) ? 0 : parsedCorrectOption;
+
+        return {
+          questionText: question.questionText || '',
+          options: options.slice(0, 4),
+          correctOption: correctOptionValue,
+          marks: question.marks ?? 1,
+        };
+      });
+
+        const normalizedFormData = {
+        title: fetchedExam.title || '',
+        description: fetchedExam.description || '',
+        startTime: fetchedExam.startTime ? new Date(fetchedExam.startTime) : new Date(Date.now() + 24 * 60 * 60 * 1000),
+        duration: fetchedExam.duration || 60,
+        activeDuration: fetchedExam.activeDuration || 24,
+        passingScore: fetchedExam.passingScore ?? 60,
+        questions: normalizedQuestions,
+        instructions:
+          fetchedExam.instructions ||
+          'Please read all questions carefully before answering. Once you submit the exam, you cannot change your answers.',
+      };
+
+      setFormData(normalizedFormData);
+      setOriginalStartTime(normalizedFormData.startTime);
+      setExpandedQuestion(normalizedFormData.questions.length ? 0 : -1);
+    } catch (fetchError) {
+      console.error('Error loading exam for edit:', fetchError);
+      setLoadError(fetchError.response?.data?.msg || 'Failed to load exam details. Please try again.');
+      setError('');
+    } finally {
+      setLoadingExistingExam(false);
+    }
+  }, [examId, isEditMode]);
+
+  useEffect(() => {
+    loadExamForEdit();
+  }, [loadExamForEdit]);
 
   const handleChange = (e) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
-    });
-  };
-
-  const handleSwitchChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.checked,
     });
   };
 
@@ -412,8 +489,15 @@ const CreateExam = () => {
       return false;
     }
 
-    if (new Date(formData.startTime) <= new Date()) {
+    const startTimeDate = new Date(formData.startTime);
+    if (startTimeDate <= new Date()) {
       setError('Start time must be in the future');
+      setActiveStep(0);
+      return false;
+    }
+
+    if (isEditMode && originalStartTime && startTimeDate.getTime() === new Date(originalStartTime).getTime()) {
+      setError('Please choose a new start time before saving changes');
       setActiveStep(0);
       return false;
     }
@@ -495,24 +579,58 @@ const CreateExam = () => {
     const token = localStorage.getItem('token');
 
     try {
-      const response = await axios.post('/api/v1/exam', formData, {
+      const endpoint = isEditMode ? `/api/v1/exam/${examId}` : '/api/v1/exam';
+      const config = {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         }
-      });
-      setSuccess('Exam created successfully!');
+      };
 
-      // Clear the saved draft
-      localStorage.removeItem('examDraft');
+      const response = isEditMode
+        ? await axios.patch(endpoint, formData, config)
+        : await axios.post(endpoint, formData, config);
+
+      const responseExam = response.data?.exam;
+      const backendMessage = response.data?.msg;
+
+      if (!responseExam) {
+        const failureMessage = backendMessage || (isEditMode
+          ? 'Exam could not be updated. Please try again.'
+          : 'Exam could not be created. Please try again.');
+        setError(failureMessage);
+        setResultBackdropType('error');
+        setResultBackdropMessage(failureMessage);
+        setResultBackdropOpen(true);
+        setTimeout(() => setResultBackdropOpen(false), 2400);
+        setIsSubmitting(false);
+        return;
+      }
+
+      const successText = backendMessage || (isEditMode ? 'Exam updated successfully!' : 'Exam created successfully!');
+      setSuccess(successText);
+      setResultBackdropType('success');
+      setResultBackdropMessage(successText);
+      setResultBackdropOpen(true);
+
+      if (!isEditMode) {
+        // Clear the saved draft
+        localStorage.removeItem('examDraft');
+      }
 
       // Redirect after a delay
       setTimeout(() => {
+        setResultBackdropOpen(false);
         navigate('/admin/exams');
       }, 2000);
     } catch (error) {
       console.error('Error details:', error.response || error);
-      setError(error.response?.data?.msg || 'Failed to create exam. Please try again.');
+      const errorMessage = error.response?.data?.msg || (isEditMode ? 'Failed to update exam. Please try again.' : 'Failed to create exam. Please try again.');
+      setError(errorMessage);
+      setResultBackdropType('error');
+      setResultBackdropMessage(errorMessage);
+      setResultBackdropOpen(true);
+      setTimeout(() => setResultBackdropOpen(false), 2400);
     } finally {
       setIsSubmitting(false);
     }
@@ -532,9 +650,6 @@ const CreateExam = () => {
       duration: 60,
       activeDuration: 24,
       passingScore: 60,
-      shuffleQuestions: true,
-      showResults: true,
-      allowReattempt: false,
       questions: [
         {
           questionText: '',
@@ -587,13 +702,53 @@ const CreateExam = () => {
       icon: <QuestionAnswerIcon />,
     },
     {
-      label: 'Review & Create',
+      label: isEditMode ? 'Review & Update' : 'Review & Create',
       icon: <CheckCircleIcon />,
     },
   ];
 
+  if (isEditMode && loadingExistingExam) {
+    return (
+      <AdminLayout title={pageTitle}>
+        <Container maxWidth="md" sx={{ mt: 8, textAlign: 'center' }}>
+          <Paper sx={{ p: 5 }}>
+            <CircularProgress />
+            <Typography variant="h6" sx={{ mt: 2 }}>
+              Loading exam details...
+            </Typography>
+          </Paper>
+        </Container>
+      </AdminLayout>
+    );
+  }
+
+  if (isEditMode && loadError) {
+    return (
+      <AdminLayout title={pageTitle}>
+        <Container maxWidth="sm" sx={{ mt: 8 }}>
+          <Paper sx={{ p: 4, textAlign: 'center' }}>
+            <Typography variant="h6" color="error" gutterBottom>
+              {loadError}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+              Please retry loading the exam or return to the exams list.
+            </Typography>
+            <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2 }}>
+              <Button variant="outlined" onClick={() => navigate('/admin/exams')}>
+                Back to Exams
+              </Button>
+              <Button variant="contained" onClick={loadExamForEdit}>
+                Retry
+              </Button>
+            </Box>
+          </Paper>
+        </Container>
+      </AdminLayout>
+    );
+  }
+
   return (
-    <AdminLayout title="Create Exam">
+    <AdminLayout title={pageTitle}>
       <Box sx={{ position: 'relative' }}>
         {/* Fixed notification for autosaving */}
         <Fade in={autoSaving}>
@@ -626,10 +781,12 @@ const CreateExam = () => {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                   <Box>
                     <Typography variant="h4" fontWeight={700} gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
-                      Create New Exam
+                      {isEditMode ? 'Edit Exam' : 'Create New Exam'}
                     </Typography>
                     <Typography variant="body1" sx={{ opacity: 0.9, mb: 2, maxWidth: '600px' }}>
-                      Design your exam by adding questions, setting a time limit, and configuring other options.
+                      {isEditMode
+                        ? 'Update exam details, adjust the schedule, and refine questions before publishing.'
+                        : 'Design your exam by adding questions, setting a time limit, and configuring other options.'}
                     </Typography>
                   </Box>
 
@@ -738,16 +895,18 @@ const CreateExam = () => {
                     Preview Exam
                   </Button>
 
-                  <Button
-                    variant="outlined"
-                    onClick={handleDiscard}
-                    startIcon={<DeleteIcon />}
-                    color="error"
-                    fullWidth
-                    sx={{ justifyContent: 'flex-start' }}
-                  >
-                    Discard Draft
-                  </Button>
+                  {!isEditMode && (
+                    <Button
+                      variant="outlined"
+                      onClick={handleDiscard}
+                      startIcon={<DeleteIcon />}
+                      color="error"
+                      fullWidth
+                      sx={{ justifyContent: 'flex-start' }}
+                    >
+                      Discard Draft
+                    </Button>
+                  )}
                 </Stack>
               </StepperSummary>
             </Grid>
@@ -764,8 +923,8 @@ const CreateExam = () => {
                     Back to Exams
                   </Button>
 
-                  {/* Only show if we have a saved draft */}
-                  {localStorage.getItem('examDraft') && (
+                  {/* Only show if we have a saved draft and we're creating */}
+                  {!isEditMode && localStorage.getItem('examDraft') && (
                     <Box sx={{ display: 'flex', alignItems: 'center' }}>
                       <Chip
                         icon={<RestoreIcon fontSize="small" />}
@@ -977,64 +1136,6 @@ const CreateExam = () => {
                             </Card>
                           </Grid>
 
-                          {/* Additional exam settings */}
-                          <Grid item xs={12}>
-                            <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 600 }}>
-                              Additional Settings
-                            </Typography>
-                            <Grid container spacing={2}>
-                              <Grid item xs={12} md={4}>
-                                <FormControlLabel
-                                  control={
-                                    <Switch
-                                      checked={formData.shuffleQuestions}
-                                      onChange={handleSwitchChange}
-                                      name="shuffleQuestions"
-                                      color="primary"
-                                    />
-                                  }
-                                  label="Shuffle Questions"
-                                />
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 4 }}>
-                                  Randomize question order for each student
-                                </Typography>
-                              </Grid>
-
-                              <Grid item xs={12} md={4}>
-                                <FormControlLabel
-                                  control={
-                                    <Switch
-                                      checked={formData.showResults}
-                                      onChange={handleSwitchChange}
-                                      name="showResults"
-                                      color="primary"
-                                    />
-                                  }
-                                  label="Show Results"
-                                />
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 4 }}>
-                                  Show scores to students after completion
-                                </Typography>
-                              </Grid>
-
-                              <Grid item xs={12} md={4}>
-                                <FormControlLabel
-                                  control={
-                                    <Switch
-                                      checked={formData.allowReattempt}
-                                      onChange={handleSwitchChange}
-                                      name="allowReattempt"
-                                      color="primary"
-                                    />
-                                  }
-                                  label="Allow Reattempt"
-                                />
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 4 }}>
-                                  Let students retake the exam if needed
-                                </Typography>
-                              </Grid>
-                            </Grid>
-                          </Grid>
                         </Grid>
 
                         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 4 }}>
@@ -1250,7 +1351,7 @@ const CreateExam = () => {
                             endIcon={<NavigateNextIcon />}
                             disabled={formData.questions.some(q => !q.questionText)}
                           >
-                            Review & Create
+                            {isEditMode ? 'Review & Update' : 'Review & Create'}
                           </Button>
                         </Box>
                       </Box>
@@ -1262,11 +1363,13 @@ const CreateExam = () => {
                     <Fade in={activeStep === 2} timeout={500}>
                       <Box>
                         <Typography variant="h6" sx={{ mb: 3 }}>
-                          Review & Create Exam
+                          {isEditMode ? 'Review & Update Exam' : 'Review & Create Exam'}
                         </Typography>
 
                         <Alert severity="info" sx={{ mb: 3 }}>
-                          Please review all exam details before creating. The exam will be available to students according to the schedule you've set.
+                          {isEditMode
+                            ? 'Please review all exam details before saving your changes. Updates will immediately reflect for students based on the schedule you have configured.'
+                            : "Please review all exam details before creating. The exam will be available to students according to the schedule you've set."}
                         </Alert>
 
                         <StyledCard>
@@ -1321,33 +1424,6 @@ const CreateExam = () => {
                                 <Typography variant="body1">{formData.passingScore}%</Typography>
                               </Grid>
 
-                              <Grid item xs={12}>
-                                <Divider sx={{ my: 1 }} />
-                                <Typography variant="subtitle2" fontWeight={600}>Settings</Typography>
-                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
-                                  <Chip
-                                    icon={formData.shuffleQuestions ? <CheckIcon /> : "*"}
-                                    label="Shuffle Questions"
-                                    variant={formData.shuffleQuestions ? "filled" : "outlined"}
-                                    color={formData.shuffleQuestions ? "primary" : "default"}
-                                    size="small"
-                                  />
-                                  <Chip
-                                    icon={formData.showResults ? <CheckIcon /> : "*"}
-                                    label="Show Results"
-                                    variant={formData.showResults ? "filled" : "outlined"}
-                                    color={formData.showResults ? "primary" : "default"}
-                                    size="small"
-                                  />
-                                  <Chip
-                                    icon={formData.allowReattempt ? <CheckIcon /> : "*"}
-                                    label="Allow Reattempt"
-                                    variant={formData.allowReattempt ? "filled" : "outlined"}
-                                    color={formData.allowReattempt ? "primary" : "default"}
-                                    size="small"
-                                  />
-                                </Box>
-                              </Grid>
                             </Grid>
                           </CardContent>
                         </StyledCard>
@@ -1428,7 +1504,9 @@ const CreateExam = () => {
                             size="large"
                             startIcon={isSubmitting ? <CircularProgress size={20} /> : <CheckCircleIcon />}
                           >
-                            {isSubmitting ? 'Creating...' : 'Create Exam'}
+                            {isSubmitting
+                              ? (isEditMode ? 'Saving...' : 'Creating...')
+                              : (isEditMode ? 'Save Changes' : 'Create Exam')}
                           </GradientButton>
                         </Box>
                       </Box>
@@ -1584,6 +1662,37 @@ const CreateExam = () => {
             </Button>
           </DialogActions>
         </Dialog>
+
+        <Backdrop
+          sx={{
+            color: '#fff',
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+            flexDirection: 'column',
+            gap: 2,
+            textAlign: 'center',
+          }}
+          open={resultBackdropOpen}
+        >
+          <Zoom in={resultBackdropOpen}>
+            <Avatar sx={{ bgcolor: resultBackdropType === 'success' ? 'success.main' : 'error.main', width: 110, height: 110 }}>
+              {resultBackdropType === 'success' ? (
+                <CheckCircleIcon sx={{ fontSize: 68 }} />
+              ) : (
+                <ErrorOutlineIcon sx={{ fontSize: 68 }} />
+              )}
+            </Avatar>
+          </Zoom>
+          <Typography variant="h5" fontWeight={600}>
+            {resultBackdropMessage || (resultBackdropType === 'success'
+              ? (isEditMode ? 'Exam updated successfully!' : 'Exam created successfully!')
+              : 'Something went wrong')}
+          </Typography>
+          <Typography variant="body1">
+            {resultBackdropType === 'success'
+              ? 'Redirecting to exam list...'
+              : 'Please review the message above and try again.'}
+          </Typography>
+        </Backdrop>
       </Box>
     </AdminLayout>
   );

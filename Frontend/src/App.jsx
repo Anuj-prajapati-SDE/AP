@@ -267,6 +267,7 @@ function App() {
             <Route path="/admin/students/create" element={<AdminRoute><CreateStudent /></AdminRoute>} />
             <Route path="/admin/exams" element={<AdminRoute><ExamList /></AdminRoute>} />
             <Route path="/admin/exams/create" element={<AdminRoute><CreateExam /></AdminRoute>} />
+            <Route path="/admin/exams/:examId/edit" element={<AdminRoute><CreateExam /></AdminRoute>} />
             <Route path="/admin/exams/:examId/results" element={<AdminRoute><ExamResults /></AdminRoute>} />
 
             {/* Student Routes */}

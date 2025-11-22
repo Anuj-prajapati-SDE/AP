@@ -14,6 +14,15 @@ const createExam = async (req, res) => {
       return res.status(403).json({ msg: 'Not authorized to create exams' });
     }
 
+    const existingExam = await Exam.findOne({
+      title,
+      createdBy: req.user.userId,
+    });
+
+    if (existingExam) {
+      return res.status(400).json({ msg: 'You already have an exam with this title' });
+    }
+
     const exam = await Exam.create({
       title,
       description,
@@ -27,6 +36,66 @@ const createExam = async (req, res) => {
 
     res.status(201).json({ exam });
   } catch (error) {
+    res.status(500).json({ msg: 'Something went wrong, try again later' });
+  }
+};
+
+// Update existing exam (admin only)
+const updateExam = async (req, res) => {
+  const { id: examId } = req.params;
+  const updates = req.body;
+
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ msg: 'Not authorized to edit exams' });
+    }
+
+    const exam = await Exam.findOne({ _id: examId, createdBy: req.user.userId });
+
+    if (!exam) {
+      return res.status(404).json({ msg: `No exam found with id ${examId}` });
+    }
+
+    const now = new Date();
+    if (now >= new Date(exam.startTime)) {
+      return res.status(403).json({ msg: 'Exam cannot be edited after it has started' });
+    }
+
+    const availabilityEnd = new Date(exam.startTime);
+    availabilityEnd.setHours(availabilityEnd.getHours() + exam.activeDuration);
+    if (now > availabilityEnd) {
+      return res.status(403).json({ msg: 'Exam can no longer be edited because its active duration has ended' });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'title') && updates.title !== exam.title) {
+      const conflictingExam = await Exam.findOne({
+        _id: { $ne: examId },
+        title: updates.title,
+        createdBy: req.user.userId,
+      });
+
+      if (conflictingExam) {
+        return res.status(400).json({ msg: 'You already have another exam with this title' });
+      }
+    }
+
+    const editableFields = ['title', 'description', 'startTime', 'duration', 'activeDuration', 'questions', 'isActive'];
+    editableFields.forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(updates, field)) {
+        exam[field] = updates[field];
+      }
+    });
+
+    // Recalculate total marks when questions change to keep scoring accurate
+    if (Object.prototype.hasOwnProperty.call(updates, 'questions')) {
+      exam.totalMarks = exam.questions.reduce((sum, question) => sum + (question.marks || 0), 0);
+    }
+
+    await exam.save();
+
+    res.status(200).json({ exam });
+  } catch (error) {
+    console.error('Error updating exam:', error);
     res.status(500).json({ msg: 'Something went wrong, try again later' });
   }
 };
@@ -47,9 +116,6 @@ const getAllExams = async (req, res) => {
     res.status(500).json({ msg: 'Something went wrong, try again later' });
   }
 };
-
-// Get single exam
-// Update the getExam function
 
 const getExam = async (req, res) => {
   const { id: examId } = req.params;
@@ -321,8 +387,6 @@ const submitExam = async (req, res) => {
   }
 };
 
-// Add this function to your exam controller
-
 // Log security violations during exam
 const logSecurityViolation = async (req, res) => {
   try {
@@ -372,12 +436,6 @@ const logSecurityViolation = async (req, res) => {
   }
 };
 
-// Add this function to your examController.js
-
-/**
- * Check if a student can access an exam
- * @route POST /api/v1/exam/:examId/check-access
- */
 const checkExamAccess = async (req, res) => {
   try {
     const { examId } = req.params;
@@ -572,10 +630,6 @@ const checkExamAccess = async (req, res) => {
   }
 };
 
-/**
- * Get exam results for a student
- * @route GET /api/v1/exam/:examId/result
- */
 const getExamResult = async (req, res) => {
   try {
     const { examId } = req.params;
@@ -644,125 +698,6 @@ const getExamResult = async (req, res) => {
   }
 };
 
-const { StatusCodes } = require('http-status-codes');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-
-// Initialize Gemini API with your API key
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// Generate exam with AI
-const generateExam = async (req, res) => {
-  try {
-    const {
-      title,
-      description,
-      numQuestions,
-      difficultyLevel,
-      subjectArea,
-      targetAudience,
-    } = req.body;
-
-    // Validate required inputs
-    if (!title || !description || !numQuestions || !subjectArea) {
-      return res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ msg: 'Please provide all required fields' });
-    }
-
-    // Prepare prompt for the AI model
-    const prompt = `
-      Create a multiple-choice exam about "${subjectArea}" with the following specifications:
-      - Title: "${title}"
-      - Description: "${description}"
-      - Number of questions: ${numQuestions}
-      - Difficulty level: ${difficultyLevel}
-      - Target audience: ${targetAudience}
-      
-      Requirements:
-      1. Each question must have exactly 4 options (A, B, C, D)
-      2. Include one correct answer for each question
-      3. Questions should be relevant to the description
-      4. Format the response as a valid JSON object with the following structure:
-      
-      {
-        "questions": [
-          {
-            "questionText": "Question 1 text goes here",
-            "options": ["Option A", "Option B", "Option C", "Option D"],
-            "correctOption": 0, // Index of correct option (0-3)
-            "marks": 1
-          },
-          // more questions...
-        ]
-      }
-      
-      Additional instructions:
-      - Ensure questions are varied and cover different aspects of the subject
-      - Make sure the difficulty matches the requested level (${difficultyLevel})
-      - The correctOption must be a number between 0-3 representing the index of the correct answer
-      - All questions should have a default mark value of 1
-      - The output must be valid JSON that can be parsed with JSON.parse()
-    `;
-
-    // Call the Gemini model
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    
-    // Parse the JSON response from Gemini
-    let jsonResponse;
-    try {
-      // Extract JSON if the response contains other text
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        jsonResponse = JSON.parse(jsonMatch[0]);
-      } else {
-        jsonResponse = JSON.parse(text);
-      }
-      
-      // Validate that the response has the expected structure
-      if (!jsonResponse.questions || !Array.isArray(jsonResponse.questions)) {
-        throw new Error('Invalid response format from AI');
-      }
-      
-      // Ensure each question has the correct structure
-      jsonResponse.questions.forEach(question => {
-        if (!question.questionText || !question.options || question.correctOption === undefined) {
-          throw new Error('Invalid question format from AI');
-        }
-        
-        // Ensure there are exactly 4 options
-        if (question.options.length !== 4) {
-          throw new Error('Each question must have exactly 4 options');
-        }
-        
-        // Ensure correctOption is between 0-3
-        if (question.correctOption < 0 || question.correctOption > 3 || !Number.isInteger(question.correctOption)) {
-          throw new Error('Correct option must be a number between 0-3');
-        }
-      });
-      
-      return res.status(StatusCodes.OK).json(jsonResponse);
-      
-    } catch (parseError) {
-      console.error('Error parsing AI response:', parseError);
-      return res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ msg: 'Failed to generate valid questions. Please try again.' });
-    }
-    
-  } catch (error) {
-    console.error('Error generating exam with AI:', error);
-    return res
-      .status(StatusCodes.INTERNAL_SERVER_ERROR)
-      .json({ msg: 'Failed to generate exam. Please try again later.' });
-  }
-};
-
-// controllers/examController.js
-
 // Delete an exam and its associated results
 const deleteExam = async (req, res) => {
   try {
@@ -799,6 +734,7 @@ const deleteExam = async (req, res) => {
 
 module.exports = {
   createExam,
+  updateExam,
   getAllExams,
   getExam,
   startExam,
@@ -806,6 +742,5 @@ module.exports = {
   logSecurityViolation,
   checkExamAccess,
   getExamResult,
-  generateExam,
   deleteExam,
 };

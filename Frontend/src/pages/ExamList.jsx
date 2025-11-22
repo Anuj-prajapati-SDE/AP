@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import {
   Container,
   Paper,
@@ -47,6 +47,8 @@ import {
   List,
   ListItem,
   ListItemSecondaryAction,
+  Backdrop,
+  Zoom,
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import {
@@ -74,6 +76,7 @@ import {
   QuestionAnswer as QuestionAnswerIcon,
   Close as CloseIcon,
   Description as DescriptionIcon,
+  FileCopy as FileCopyIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
 import AdminLayout from '../components/AdminLayout';
@@ -209,6 +212,7 @@ const StatItem = styled(Box)(({ theme }) => ({
 }));
 
 const ExamList = () => {
+  const navigate = useNavigate();
   const [exams, setExams] = useState([]);
   const [filteredExams, setFilteredExams] = useState([]);
   const [students, setStudents] = useState([]);
@@ -225,18 +229,37 @@ const ExamList = () => {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [tabValue, setTabValue] = useState(0);
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
-  const [actionExam, setActionExam] = useState(null);
+  const [menuExam, setMenuExam] = useState(null);
   const [selectedAll, setSelectedAll] = useState(false);
   const [searchFocus, setSearchFocus] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
-  // New state for exam details dialog
   const [examDetailsOpen, setExamDetailsOpen] = useState(false);
   const [examDetails, setExamDetails] = useState(null);
   const [loadingExamDetails, setLoadingExamDetails] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteSuccess, setDeleteSuccess] = useState(false);
+  const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
+  const [cloneName, setCloneName] = useState('');
+  const [cloneStartTime, setCloneStartTime] = useState('');
+  const [cloneDuration, setCloneDuration] = useState(60);
+  const [cloneActiveDuration, setCloneActiveDuration] = useState(24);
+  const [cloneLoading, setCloneLoading] = useState(false);
+  const [cloneSuccess, setCloneSuccess] = useState('');
+  const [cloneError, setCloneError] = useState('');
+  const [cloneTargetExam, setCloneTargetExam] = useState(null);
+  const [cloneSuccessBackdrop, setCloneSuccessBackdrop] = useState(false);
+  const [cloneSuccessMessage, setCloneSuccessMessage] = useState('');
+  const [deleteExam, setDeleteExam] = useState(null);
   
   const theme = useTheme();
+
+  const toDateTimeLocal = (value) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return offsetDate.toISOString().slice(0, 16);
+  };
   
   // Status counts for tabs
   const [statusCounts, setStatusCounts] = useState({
@@ -403,24 +426,180 @@ const ExamList = () => {
   // Handle menu open/close
   const handleMenuOpen = (event, exam) => {
     event.stopPropagation();
-    setActionExam(exam);
+    setMenuExam(exam);
     setMenuAnchorEl(event.currentTarget);
   };
 
   const handleMenuClose = () => {
     setMenuAnchorEl(null);
+    setMenuExam(null);
   };
   
   // Handle copy exam ID
   const handleCopyExamId = () => {
-    if (!actionExam) return;
-    
-    navigator.clipboard.writeText(actionExam._id);
+    if (!menuExam) return;
+
+    navigator.clipboard.writeText(menuExam._id);
     handleMenuClose();
+  };
+
+  const handleEditExam = () => {
+    if (!menuExam) return;
+    const examId = menuExam._id;
+    handleMenuClose();
+    navigate(`/admin/exams/${examId}/edit`);
+  };
+
+  const handleOpenCloneDialog = () => {
+    if (!menuExam) return;
+    setCloneTargetExam(menuExam);
+    setCloneName(`${menuExam.title} (Copy)`);
+    const baseStart = menuExam.startTime && new Date(menuExam.startTime) > new Date()
+      ? menuExam.startTime
+      : new Date(Date.now() + 60 * 60 * 1000);
+    setCloneStartTime(toDateTimeLocal(baseStart));
+    setCloneDuration(menuExam.duration || 60);
+    setCloneActiveDuration(menuExam.activeDuration || 24);
+    setCloneError('');
+    setCloneSuccess('');
+    setCloneDialogOpen(true);
+    handleMenuClose();
+  };
+
+  const handleCloseCloneDialog = () => {
+    setCloneDialogOpen(false);
+    setCloneTargetExam(null);
+    setCloneName('');
+    setCloneStartTime('');
+    setCloneDuration(60);
+    setCloneActiveDuration(24);
+    setCloneError('');
+    setCloneSuccess('');
+    setCloneLoading(false);
+    setCloneSuccessBackdrop(false);
+    setCloneSuccessMessage('');
+  };
+
+  const handleCloneExam = async () => {
+    if (!cloneTargetExam) return;
+    setCloneLoading(true);
+    setCloneError('');
+
+    try {
+      const parsedStart = cloneStartTime ? new Date(cloneStartTime) : null;
+      if (!parsedStart || Number.isNaN(parsedStart.getTime())) {
+        setCloneError('Please provide a valid start time for the cloned exam.');
+        setCloneLoading(false);
+        return;
+      }
+      if (parsedStart <= new Date()) {
+        setCloneError('Start time must be in the future.');
+        setCloneLoading(false);
+        return;
+      }
+
+      const parsedDuration = Number(cloneDuration);
+      const parsedActiveDuration = Number(cloneActiveDuration);
+
+      if (parsedDuration <= 0 || parsedActiveDuration <= 0) {
+        setCloneError('Duration values must be greater than zero.');
+        setCloneLoading(false);
+        return;
+      }
+
+      const examResponse = await axios.get(`/api/v1/exam/${cloneTargetExam._id}`);
+      const examData = examResponse.data?.exam;
+
+      if (!examData) {
+        throw new Error('Unable to load exam details for cloning.');
+      }
+
+      const sanitizedQuestions = (examData.questions || []).map((question) => {
+        const options = Array.isArray(question.options) ? [...question.options] : ['', '', '', ''];
+        while (options.length < 4) {
+          options.push('');
+        }
+
+        return {
+          questionText: question.questionText || '',
+          options: options.slice(0, 4),
+          correctOption:
+            typeof question.correctOption === 'number'
+              ? question.correctOption
+              : parseInt(question.correctOption, 10) || 0,
+          marks: question.marks ?? 1,
+        };
+      });
+
+      const clonePayload = {
+        title: cloneName?.trim() || `${cloneTargetExam.title} Copy`,
+        description: examData.description || '',
+        startTime: parsedStart,
+        duration: parsedDuration,
+        activeDuration: parsedActiveDuration,
+        passingScore: examData.passingScore ?? 60,
+        shuffleQuestions:
+          typeof examData.shuffleQuestions === 'boolean'
+            ? examData.shuffleQuestions
+            : true,
+        showResults:
+          typeof examData.showResults === 'boolean'
+            ? examData.showResults
+            : true,
+        allowReattempt:
+          typeof examData.allowReattempt === 'boolean'
+            ? examData.allowReattempt
+            : false,
+        questions: sanitizedQuestions.length ? sanitizedQuestions : [
+          {
+            questionText: '',
+            options: ['', '', '', ''],
+            correctOption: 0,
+            marks: 1,
+          }
+        ],
+        instructions:
+          examData.instructions ||
+          'Please read all questions carefully before answering. Once you submit the exam, you cannot change your answers.',
+      };
+
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+
+      const createResponse = await axios.post('/api/v1/exam', clonePayload, { headers });
+      const createdExam = createResponse.data?.exam;
+      const backendMessage = createResponse.data?.msg;
+
+      if (!createdExam) {
+        throw new Error(backendMessage || 'Exam clone failed. Please try again.');
+      }
+
+      const message = backendMessage || 'Exam cloned successfully!';
+      setCloneSuccess(message);
+      setCloneSuccessMessage(message);
+      setCloneSuccessBackdrop(true);
+      await fetchExams();
+      setTimeout(() => {
+        setCloneSuccessBackdrop(false);
+        handleCloseCloneDialog();
+      }, 1500);
+    } catch (error) {
+      console.error('Error cloning exam:', error);
+      const message =
+        error.response?.data?.msg || error.message || 'Failed to clone exam. Please try again.';
+      setCloneError(message);
+    } finally {
+      setCloneLoading(false);
+    }
   };
   
   // Delete exam confirmation
   const handleOpenDeleteDialog = () => {
+    if (!menuExam) return;
+    setDeleteExam(menuExam);
     handleMenuClose();
     setConfirmDeleteOpen(true);
   };
@@ -428,16 +607,17 @@ const ExamList = () => {
   const handleCloseDeleteDialog = () => {
     setConfirmDeleteOpen(false);
     setDeleteSuccess(false);
+    setDeleteExam(null);
   };
   
   // New function for deleting an exam
   const handleDeleteExam = async () => {
-    if (!actionExam) return;
+    if (!deleteExam) return;
     
     setDeleteLoading(true);
     
     try {
-      await axios.delete(`/api/v1/exam/${actionExam._id}/delete`);
+      await axios.delete(`/api/v1/exam/${deleteExam._id}/delete`);
       setDeleteSuccess(true);
       
       // Refresh the exam list after successful deletion
@@ -1081,6 +1261,119 @@ const ExamList = () => {
             </Button>
           </DialogActions>
         </Dialog>
+
+        {/* Clone Exam Dialog */}
+        <Dialog
+          open={cloneDialogOpen}
+          onClose={cloneLoading ? undefined : handleCloseCloneDialog}
+          maxWidth="sm"
+          fullWidth
+          PaperProps={{ elevation: 24, sx: { borderRadius: 2 } }}
+        >
+          <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <FileCopyIcon color="primary" />
+            Clone Exam
+          </DialogTitle>
+          <DialogContent dividers>
+            <DialogContentText sx={{ mb: 2 }}>
+              A cloned exam keeps all questions, timing, and settings from the original. Choose a new title and adjust the schedule before creating the copy.
+            </DialogContentText>
+
+            {cloneError && (
+              <Alert severity="error" sx={{ mb: 2 }} onClose={() => setCloneError('')}>
+                {cloneError}
+              </Alert>
+            )}
+
+            {cloneSuccess && (
+              <Alert severity="success" sx={{ mb: 2 }}>
+                {cloneSuccess}
+              </Alert>
+            )}
+
+            <TextField
+              label="New Exam Title"
+              fullWidth
+              value={cloneName}
+              onChange={(e) => setCloneName(e.target.value)}
+              disabled={cloneLoading}
+              helperText="This title will appear everywhere the cloned exam is listed."
+              sx={{ mb: 3 }}
+            />
+
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  label="Exam Start Time"
+                  type="datetime-local"
+                  fullWidth
+                  value={cloneStartTime}
+                  onChange={(e) => setCloneStartTime(e.target.value)}
+                  disabled={cloneLoading}
+                  InputLabelProps={{ shrink: true }}
+                  helperText="Students can start only after this time."
+                />
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <TextField
+                  label="Duration (min)"
+                  type="number"
+                  fullWidth
+                  value={cloneDuration}
+                  onChange={(e) => setCloneDuration(e.target.value)}
+                  disabled={cloneLoading}
+                  inputProps={{ min: 1 }}
+                />
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <TextField
+                  label="Active Duartion (hrs)"
+                  type="number"
+                  fullWidth
+                  value={cloneActiveDuration}
+                  onChange={(e) => setCloneActiveDuration(e.target.value)}
+                  disabled={cloneLoading}
+                  inputProps={{ min: 1 }}
+                />
+              </Grid>
+            </Grid>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={handleCloseCloneDialog} disabled={cloneLoading}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCloneExam}
+              disabled={!cloneName.trim() || cloneLoading}
+              variant="contained"
+              startIcon={cloneLoading ? <CircularProgress size={18} /> : <FileCopyIcon />}
+            >
+              {cloneLoading ? 'Cloning...' : 'Clone Exam'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Backdrop
+          sx={{
+            color: '#fff',
+            zIndex: (theme) => theme.zIndex.drawer + 2,
+            flexDirection: 'column',
+            gap: 2,
+          }}
+          open={cloneSuccessBackdrop}
+        >
+          <Zoom in={cloneSuccessBackdrop}>
+            <Avatar sx={{ bgcolor: 'success.main', width: 110, height: 110 }}>
+              <CheckCircleIcon sx={{ fontSize: 68 }} />
+            </Avatar>
+          </Zoom>
+          <Typography variant="h5" fontWeight={600}>
+            {cloneSuccessMessage || 'Exam cloned successfully!'}
+          </Typography>
+          <Typography variant="body1">
+            Returning to exam list...
+          </Typography>
+        </Backdrop>
         
         {/* Action Menu */}
         <Menu
@@ -1095,19 +1388,25 @@ const ExamList = () => {
             sx: { width: 200, borderRadius: 2, mt: 0.5 }
           }}
         >
-          {/* <MenuItem 
-            component={RouterLink}
-            to={actionExam ? `/admin/exams/${actionExam._id}/edit` : '#'} 
-            onClick={handleMenuClose}
+          <MenuItem 
+            onClick={handleEditExam}
             dense
+            disabled={!menuExam}
           >
             <ListItemIcon>
               <EditIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText>Edit Exam</ListItemText>
-          </MenuItem> */}
+          </MenuItem>
+
+          <MenuItem onClick={handleOpenCloneDialog} dense disabled={!menuExam}>
+            <ListItemIcon>
+              <FileCopyIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Clone Exam</ListItemText>
+          </MenuItem>
           
-          <MenuItem onClick={handleCopyExamId} dense>
+          <MenuItem onClick={handleCopyExamId} dense disabled={!menuExam}>
             <ListItemIcon>
               <ContentCopyIcon fontSize="small" />
             </ListItemIcon>
@@ -1116,7 +1415,12 @@ const ExamList = () => {
           
           <Divider />
           
-          <MenuItem onClick={handleOpenDeleteDialog} dense sx={{ color: theme.palette.error.main }}>
+          <MenuItem 
+            onClick={handleOpenDeleteDialog} 
+            dense 
+            disabled={!menuExam}
+            sx={{ color: theme.palette.error.main }}
+          >
             <ListItemIcon>
               <DeleteIcon fontSize="small" color="error" />
             </ListItemIcon>
@@ -1148,7 +1452,7 @@ const ExamList = () => {
               </DialogTitle>
               <DialogContent>
                 <DialogContentText>
-                  Are you sure you want to delete the exam <strong>{actionExam?.title}</strong>? 
+                  Are you sure you want to delete the exam <strong>{deleteExam?.title}</strong>? 
                   This action cannot be undone, and all results will be lost.
                 </DialogContentText>
               </DialogContent>

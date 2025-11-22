@@ -28,6 +28,7 @@ const ExamSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Please provide an exam title'],
     trim: true,
+    unique: true,
   },
   description: {
     type: String,
