@@ -170,6 +170,14 @@ const ExamResults = () => {
   const [isLoadingAnswers, setIsLoadingAnswers] = useState(false);
   const [answerDialogOpen, setAnswerDialogOpen] = useState(false);
 
+  // Ensure we always work with a predictable answers array
+  const toAnswerArray = (payload, fallback = []) => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.answers)) return payload.answers;
+    if (Array.isArray(payload?.data?.answers)) return payload.data.answers;
+    return fallback;
+  };
+
   useEffect(() => {
     const fetchExamAndResults = async () => {
       try {
@@ -218,12 +226,16 @@ const ExamResults = () => {
       // Fetch detailed answers for this student
       const response = await axios.get(`/api/v1/admin/exams/${examId}/students/${student.student._id}/answers`);
       
-      setStudentAnswers(response.data);
+      const normalizedAnswers = toAnswerArray(response.data, student.answers || []);
+      setStudentAnswers({
+        answers: normalizedAnswers,
+        questions: response.data?.questions || exam.questions || [],
+      });
     } catch (error) {
       console.error('Error fetching student answers:', error);
       // If API doesn't exist, we'll use the answers from the result object itself
       setStudentAnswers({
-        answers: student.answers || [],
+        answers: toAnswerArray(student.answers || [], []),
         questions: exam.questions || [],
       });
     } finally {
@@ -238,12 +250,18 @@ const ExamResults = () => {
     setStudentAnswers(null);
   };
 
+  // Helper to safely access the answers array
+  const getAnswerList = () => {
+    if (!studentAnswers) return [];
+    return Array.isArray(studentAnswers.answers) ? studentAnswers.answers : [];
+  };
+
   // Calculate student answer statistics
-  const calculateAnswerStats = () => {
-    if (!studentAnswers || !studentAnswers.answers) return { correct: 0, incorrect: 0, total: 0 };
+  const calculateAnswerStats = (answers = []) => {
+    if (!answers.length) return { correct: 0, incorrect: 0, total: 0 };
     
-    const correct = studentAnswers.answers.filter(answer => answer.isCorrect).length;
-    const total = studentAnswers.answers.length;
+    const correct = answers.filter(answer => answer.isCorrect).length;
+    const total = answers.length;
     const incorrect = total - correct;
     
     return { correct, incorrect, total };
@@ -450,7 +468,8 @@ const ExamResults = () => {
   }
   
   // Get answer stats for selected student
-  const answerStats = calculateAnswerStats();
+  const answersList = getAnswerList();
+  const answerStats = calculateAnswerStats(answersList);
 
   return (
     <AdminLayout title={`Results: ${exam.title}`}>
@@ -898,7 +917,7 @@ const ExamResults = () => {
             <Alert severity="error">
               Failed to load student answers. Please try again.
             </Alert>
-          ) : studentAnswers.answers.length === 0 ? (
+          ) : answersList.length === 0 ? (
             <Alert severity="info">
               No answers found for this student.
             </Alert>
@@ -945,7 +964,7 @@ const ExamResults = () => {
                 Question Answers
               </Typography>
               
-              {studentAnswers.answers.map((answer, index) => {
+              {answersList.map((answer, index) => {
                 // Find the matching question from the exam questions
                 const question = exam.questions.find(q => q._id === answer.questionId);
                 if (!question) return null;

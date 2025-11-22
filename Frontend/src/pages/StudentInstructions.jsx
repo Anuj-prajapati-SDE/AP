@@ -111,7 +111,7 @@ const InfoCard = styled(Card)(({ theme, type = 'default' }) => {
     case 'success':
       backgroundColor = alpha(theme.palette.success.main, 0.05);
       borderColor = alpha(theme.palette.success.main, 0.3);
-      iconColor = theme.palette.success.main;
+      iconColor = theme.palette.success.main; 
       break;
     case 'info':
       backgroundColor = alpha(theme.palette.info.main, 0.05);
@@ -211,10 +211,9 @@ const StudentInstructions = () => {
   
   useEffect(() => {
     const fetchExam = async () => {
+      setIsLoading(true);
       try {
         console.log('Fetching exam details...');
-        
-        // Get token from localStorage
         const token = localStorage.getItem('token');
         if (!token) {
           console.error('No auth token found');
@@ -222,23 +221,29 @@ const StudentInstructions = () => {
           setIsLoading(false);
           return;
         }
-        
+
         const response = await axios.get(`/api/v1/exam/${examId}`, {
           headers: {
-            'Authorization': `Bearer ${token}`
-          }
+            Authorization: `Bearer ${token}`,
+          },
         });
-        
+
         console.log('Exam fetched successfully:', response.data);
         setExam(response.data.exam);
+        setWaitingForExam(false);
+        setExamStartTime(null);
+        setTimeRemaining(null);
+        setError('');
       } catch (error) {
         console.error('Error fetching exam:', error.response?.data || error);
-        
+
         if (error.response?.status === 403 && error.response?.data?.startTime) {
-          // Exam hasn't started yet
           console.log('Exam not started yet, showing waiting page');
           setWaitingForExam(true);
-          setExamStartTime(new Date(error.response.data.startTime));
+          const start = new Date(error.response.data.startTime);
+          setExamStartTime(start);
+          setTimeRemaining(error.response.data.waitTimeMinutes || null);
+          setExam(null);
           setError('Exam has not started yet. Please wait until the scheduled time.');
         } else if (error.response?.status === 401) {
           setError('Your session has expired. Please log in again.');
@@ -249,31 +254,35 @@ const StudentInstructions = () => {
         setIsLoading(false);
       }
     };
-    
+
     fetchExam();
-    
-    // Set up timer for exam waiting
-    if (waitingForExam && examStartTime) {
-      const timer = setInterval(() => {
-        const now = new Date();
-        if (now >= examStartTime) {
-          window.location.reload();
-        } else {
-          const remainingMs = examStartTime - now;
-          const remainingMinutes = Math.ceil(remainingMs / (1000 * 60));
-          setTimeRemaining(remainingMinutes);
-          
-          // Update every second for last minute countdown
-          if (remainingMinutes <= 1) {
-            const seconds = Math.floor(remainingMs / 1000);
-            setTimeRemaining(`${seconds} seconds`);
-          }
-        }
-      }, remainingMinutes <= 1 ? 1000 : 30000); // Check every 30 seconds, or every second for last minute
-      
-      return () => clearInterval(timer);
-    }
-  }, [examId, waitingForExam, examStartTime, timeRemaining]);
+  }, [examId]);
+
+  useEffect(() => {
+    if (!waitingForExam || !examStartTime) return undefined;
+
+    const updateRemainingTime = () => {
+      const now = new Date();
+      if (now >= examStartTime) {
+        window.location.reload();
+        return;
+      }
+
+      const remainingMs = examStartTime - now;
+      const minutes = Math.floor(remainingMs / (1000 * 60));
+
+      if (minutes >= 1) {
+        setTimeRemaining(`${minutes} minute${minutes === 1 ? '' : 's'}`);
+      } else {
+        const seconds = Math.max(0, Math.floor(remainingMs / 1000));
+        setTimeRemaining(`${seconds} second${seconds === 1 ? '' : 's'}`);
+      }
+    };
+
+    updateRemainingTime();
+    const intervalId = setInterval(updateRemainingTime, 1000);
+    return () => clearInterval(intervalId);
+  }, [waitingForExam, examStartTime]);
   
   const handleStartExam = async () => {
     if (!agreementChecked) return;

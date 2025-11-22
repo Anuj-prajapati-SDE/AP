@@ -18,6 +18,7 @@ router.post('/', createExam);
 router.get('/', getAllExams);
 router.get('/:id', getExam);
 router.put('/:id', updateExam);
+router.patch('/:id', updateExam);
 router.post('/:id/start', startExam);
 router.post('/:id/submit', submitExam);
 router.post('/:examId/violation', logSecurityViolation);
