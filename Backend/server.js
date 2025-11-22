@@ -5,9 +5,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
-// const studentRoutes = require('./routes/student');
 const examRoutes = require('./routes/exam');
-// const resultRoutes = require('./routes/result');
 const authenticateUser = require('./middleware/authentication');
 const Admin = require('./models/Admin');
 const studentRoutes = require('./routes/student');
@@ -47,12 +45,9 @@ const createInitialAdmin = async () => {
 
 // Routes
 app.use('/api/v1/auth', authRoutes);
-// Uncomment the student routes in server.js
 app.use('/api/v1/student', authenticateUser, studentRoutes);
 app.use('/api/v1/admin', authenticateUser, adminRoutes);
-// app.use('/api/v1/student', authenticateUser, studentRoutes);
 app.use('/api/v1/exam', authenticateUser, examRoutes);
-// app.use('/api/v1/result', authenticateUser, resultRoutes);
 app.use('/api/v1/public', require('./routes/publicRoutes'));
 
 // Error handler middleware
